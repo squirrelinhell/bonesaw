@@ -66,7 +66,8 @@ def run():
     decoder_input = Input(LATENT_SIZE)
     decoder = Tanh(Affine(decoder_input, 300))
     decoder = Affine(decoder, gen_traj().size)
-    decoder = Gauss(mean=decoder, logstd=Const(np.zeros(gen_traj().size) - 6))
+    mean_dec = decoder
+    decoder = Gauss(mean=decoder)
 
     encOptimizer = Adam(encoder.get_params(), horizon=10, lr=0.01)
     decOptimizer = Adam(decoder.get_params(), horizon=10, lr=0.01)
@@ -94,6 +95,7 @@ def run():
             dklBackprop(-np.ones(128))
             + encBackprop(decoder_input.last_gradient)
         )
+        print(decoder_input.last_gradient)
 
         print("Logprob:", bar(np.mean(inpsLogprob), 20000),
             "DKL:", bar(np.mean(dklValue), 200))
@@ -101,9 +103,9 @@ def run():
         if i % 25 == 24:
             save_plot(
                 "test_%05d.png" % (i+1),
-                decoder.sample(np.random.randn(64, LATENT_SIZE)),
+                mean_dec(np.random.randn(64, LATENT_SIZE)),
                 inps,
-                decoder.sample(representation),
+                mean_dec(representation),
             )
 
 if __name__ == '__main__':
