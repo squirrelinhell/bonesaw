@@ -77,12 +77,12 @@ def Split(inner):
 
     return First(), Second()
 
-def build_hidden(layer):
-    for _ in range(2):
-        layer = Tanh(Affine(layer, 128))
-    return layer
-
 def build_vae():
+    def build_hidden(layer):
+        for _ in range(2):
+            layer = Tanh(Affine(layer, 128))
+        return layer
+
     LATENT_SIZE=2
     encoder = build_hidden(Input(2*GEN_SEGM_LEN))
     encoder = Split(encoder)
@@ -139,12 +139,6 @@ def build_vae():
 
     return Result
 
-def split_obs(obs):
-    cutoff = len(obs)%(2*GEN_SEGM_LEN)
-    obs = obs[cutoff:]
-    #obs = obs.reshape(GEN_SEGM_LEN, -1, 2).transpose((1,0,2))
-    return obs.reshape(-1, 2*GEN_SEGM_LEN)
-
 def build_agent():
     model = Input(2)
     model = LReLU(Affine(model, 32))
@@ -153,8 +147,8 @@ def build_agent():
 
     opt = Adam(
         np.random.randn(model.n_params),
-        lr=0.01, # 0.05 / 0.01 / 0.02
-        horizon=20, # 40 / 10 / 20 / 5
+        lr=0.01,
+        horizon=20,
     )
     def sgd_step(traj):
         model.load_params(opt.get_value())
@@ -189,6 +183,10 @@ def save_plot(file_name, trajs, *,
 def traj_scorer():
     imagination = build_vae()
     old_agent_trajs = []
+    def split_into_segments(obs):
+        cutoff = len(obs)%(2*GEN_SEGM_LEN)
+        obs = obs[cutoff:]
+        return obs.reshape(-1, 2*GEN_SEGM_LEN)
     def pick_segment(obs):
         start = np.random.randint(len(obs) - GEN_SEGM_LEN + 1)
         return obs[start:start+GEN_SEGM_LEN,:].reshape(2*GEN_SEGM_LEN)
@@ -201,7 +199,7 @@ def traj_scorer():
         agent_obs = np.array([pick_segment(at.o) for at in old_agent_trajs])
         imagination.train(agent_obs)
     def curious(obs):
-        obs = split_obs(obs)
+        obs = split_into_segments(obs)
         rewards = imagination.DKL(obs)
         def c(r):
             result = []
@@ -224,6 +222,23 @@ def traj_scorer():
             save_plot(file_name, forplot)
     return Result
 
+def trainer(agent, world, scorer):
+    rewardNormalize = RunningNormalize(horizon=10)
+
+    def train():
+        agent.randomize_policy()
+        agent_traj = episode(world, agent.policy, max_steps=200)
+
+        agent_traj_curio = scorer.score(agent_traj)
+
+        print(bar(np.mean(agent_traj_curio.r), 100.))
+
+        agent_traj_curio = agent_traj_curio.discounted(horizon=200)
+        agent_traj_curio = agent_traj_curio.modified(rewards=rewardNormalize)
+        agent.sgd_step(agent_traj_curio)
+
+    return train
+
 def curiosity(world):
     log_dir = "__car"
     if not os.path.exists(log_dir):
@@ -232,47 +247,40 @@ def curiosity(world):
     world = NormalizedObservations(world)
     agent = build_agent()
     scorer = traj_scorer()
-
-    curNormalize = RunningNormalize(horizon=10)
-
-    def unnormalize(obs):
-        return (obs * world.get_std()) + world.get_mean()
+    train = trainer(agent, world, scorer)
 
     for ep in range(2000):
-        agent.randomize_policy()
-        agent_traj = episode(world, agent.policy, max_steps=200)
+        train()
 
-        agent_traj_curio = scorer.score(agent_traj)
-
+        def unnormalize(obs):
+            return (obs * world.get_std()) + world.get_mean()
         if (ep % 20) == 0:
             scorer.plot(log_dir + "/%04d.png"%ep, unnormalize)
             np.savez(log_dir + "/%04d.npz"%ep, params=agent.get_params(), norm_mean=world.get_mean(), norm_std=world.get_std())
 
-        print(bar(np.mean(agent_traj_curio.r), 100.))
 
-        agent_traj_curio = agent_traj_curio.discounted(horizon=200)
-        agent_traj_curio = agent_traj_curio.modified(rewards=curNormalize)
-        agent.sgd_step(agent_traj_curio)
+def render(world, agent_files):
+    old_render = world.render
+    def betterRender():
+        import time
+        old_render()
+        time.sleep(0.01)
+    world.render = betterRender
+    agent = build_agent()
+    for fn in agent_files:
+        pars = np.load(fn)
+        agent.load_params(pars["params"])
+        def seeingAgent(inps):
+            inps = inps - pars["norm_mean"]
+            inps = inps / pars["norm_std"]
+            return agent(inps)
+        episode(world, seeingAgent, render=True)
 
 def run():
     world = gym.make("MountainCarContinuous-v0")
 
     if len(sys.argv) >= 2:
-        old_render = world.render
-        def betterRender():
-            import time
-            old_render()
-            time.sleep(0.01)
-        world.render = betterRender
-        agent = build_agent()
-        for fn in sys.argv[1:]:
-            pars = np.load(fn)
-            agent.load_params(pars["params"])
-            def seeingAgent(inps):
-                inps = inps - pars["norm_mean"]
-                inps = inps / pars["norm_std"]
-                return agent(inps)
-            episode(world, seeingAgent, render=True)
+        render(world, sys.argv[1:])
     else:
         curiosity(world)
 
