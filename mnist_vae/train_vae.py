@@ -28,21 +28,25 @@ def DKLUninormal(*, mean, logstd):
     return Function(mean, logstd, f=dkl, shape=())
 
 def run():
-    LATENT_SIZE = 2
+    LATENT_SIZE = 3
 
     train_x = np.load("__mnist.npz")['train_x']
 
     encoder = Input(28*28)
     encoder = Tanh(Affine(encoder, 300))
-    encoder = Affine(encoder, LATENT_SIZE), Params(LATENT_SIZE)
+    encoder = Gauss(
+        mean=Affine(encoder, LATENT_SIZE),
+        logstd=Params(LATENT_SIZE)
+    )
 
-    dkl = DKLUninormal(mean=encoder[0], logstd=encoder[1])
-    encoder = Gauss(mean=encoder[0], logstd=encoder[1])
+    dkl = DKLUninormal(mean=encoder.mean, logstd=encoder.logstd)
 
     decoder_input = Input(LATENT_SIZE)
     decoder = Tanh(Affine(decoder_input, 300))
-    decoder = Affine(decoder, 28*28)
-    decoder = Gauss(mean=decoder, logstd=Const(np.zeros(28*28) - 3))
+    decoder = Gauss(
+        mean=Affine(decoder, 28*28),
+        logstd=Const(np.zeros(28*28) - 3)
+    )
 
     encOptimizer = Adam(encoder.get_params(), horizon=10, lr=0.01)
     decOptimizer = Adam(decoder.get_params(), horizon=10, lr=0.01)
@@ -78,11 +82,11 @@ def run():
         if i % 100 == 99:
             plt.clf()
             fig, plots = plt.subplots(2)
-            changedPic = decoder.sample(representation[43])
+            changedPic = decoder.mean(representation[43])
             plots[0].imshow(changedPic.reshape(28,28),
-                cmap="gray", vmin=-1, vmax=1)
+                cmap="gray", vmin=0, vmax=1)
             plots[1].imshow(pics[43].reshape(28,28),
-                cmap="gray", vmin=-1, vmax=1)
+                cmap="gray", vmin=0, vmax=1)
             fig.savefig("step_%05d.png"%(i+1), dpi=100)
 
         if i % 1000 == 999:
